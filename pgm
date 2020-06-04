@@ -1,0 +1,363 @@
+#include <QCoreApplication>
+#include <opencv2/opencv.hpp>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include<string>
+#include <QTimer>
+#include <QDebug>
+#include <opencv2/dnn.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
+#include <QSerialPort>
+using namespace cv;
+using namespace std;
+using namespace dnn;
+// Initialize the parameters
+float confThreshold = 0.5; // Confidence threshold
+float nmsThreshold = 0.4; // Non-maximum suppression threshold
+int inpWidth = 416; // Width of network's input image
+int inpHeight = 416;
+int vehicleCnt = 0;
+Mat image, blob, blob1;
+vector<Mat> cameraInputs;
+Mat traffic;
+Mat traffic1;
+String modelConfiguration = "yolov3.cfg";
+String modelWeights = "yolov3.weights";
+vector<string>classes;
+// Get the names of the output layers
+vector<String> getOutputsNames(const Net& net);
+// serial port parameters
+QSerialPort Serial;
+QByteArray output; //serial port output array
+QByteArray input; //serial port input array
+// Remove the bounding boxes with low confidence using non-maxima suppression
+void postprocess(Mat& frame, const vector<Mat>& out);
+// Draw the predicted bounding box
+void drawPred(int classId, float conf, int left, int top, int right, int bottom, Mat& frame);
+void counting();
+void interrupt();
+int main(int argc, char *argv[])
+{
+QCoreApplication a(argc, argv);
+cout << "Traffic signal!" << endl;
+///////////////Serial Port Init////////////
+Serial.setPortName("COM5");
+Serial.open(QIODevice::ReadWrite);
+Serial.setBaudRate(QSerialPort::Baud9600);
+Serial.setDataBits(QSerialPort::Data8);
+Serial.setParity(QSerialPort::NoParity);
+Serial.setStopBits(QSerialPort::OneStop);
+Serial.setFlowControl(QSerialPort::NoFlowControl);
+//------------inputing images-------------//
+Mat inputImage;
+inputImage= imread("R1_1.jpg");
+resize(inputImage,inputImage,Size(500,500));
+cameraInputs.push_back(inputImage);
+inputImage= imread("R2_1.jpg");
+resize(inputImage,inputImage,Size(500,500));
+cameraInputs.push_back(inputImage);
+inputImage= imread("R1_2.jpg");
+resize(inputImage,inputImage,Size(500,500));
+cameraInputs.push_back(inputImage);
+inputImage= imread("R2_2.jpg");
+resize(inputImage,inputImage,Size(500,500));
+cameraInputs.push_back(inputImage);
+//Traffic light garaphics
+traffic = Mat::zeros( 660, 220, CV_8UC3 );
+traffic1 = Mat::zeros( 660, 220, CV_8UC3 );
+circle(traffic, Point(110,110), 100, Scalar(0,0,255),FILLED,LINE_8);
+imshow("Traffic",traffic);
+// Load names of classes
+string classesFile = "coco.names";
+ifstream ifs(classesFile.c_str());
+string line;
+while (getline(ifs, line)) classes.push_back(line);
+// cout<<classes[1]<<endl;
+while(1)
+{
+counting();
+int k =waitKey(10);
+if(k==27)
+break;
+}
+return a.exec();
+}
+void counting()
+{
+int lineType = 8;
+for(int i=0; i<=3 ; i++)
+{
+vehicleCnt =0;
+image= cameraInputs[i];
+//imshow("input",image);
+Net net = readNetFromDarknet(modelConfiguration, modelWeights);
+net.setPreferableBackend(DNN_BACKEND_OPENCV);
+net.setPreferableTarget(DNN_TARGET_CPU);
+blobFromImage(image, blob, 1/255.0, cv::Size(inpWidth, inpHeight), Scalar(0,0,0), 
+true, false);
+//Sets the input to the network
+net.setInput(blob);
+// Runs the forward pass to get output of the output layers
+vector<Mat> outs;
+net.forward(outs, getOutputsNames(net));
+// Remove the bounding boxes with low confidence
+postprocess(image, outs);
+// Write the frame with the detection boxes
+Mat detectedFrame;
+image.convertTo(detectedFrame, CV_8U);
+imshow("detected",image);
+cout<<" Count" <<vehicleCnt<<endl;
+// waitKey(0);
+if(vehicleCnt >10)
+{
+circle(traffic, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,255,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+for (int i=0; i<=10; i++)
+{
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+{
+interrupt();
+Serial.flush();
+break;
+}
+Mat count = imread("circle.png",IMREAD_COLOR);
+String text=to_string(10-i);
+Size textsize = getTextSize(text, FONT_HERSHEY_COMPLEX, 3,10,0);
+putText( count, text, Point(50,130), FONT_HERSHEY_COMPLEX, 3, 
+Scalar(0, 255, 0),5,lineType);
+imshow("count",count);
+waitKey(1000);
+}
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+interrupt();
+Serial.flush();
+circle(traffic, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(1,185,255),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+waitKey(1000);
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+interrupt();
+Serial.flush();
+circle(traffic, Point(110,110), 100, Scalar(0,0,255),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+waitKey(1000);
+}
+else
+{
+circle(traffic, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,255,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+for (int i=0; i<=4; i++)
+{
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+{
+interrupt();
+Serial.flush();
+break;
+}
+Mat count = imread("circle.png",IMREAD_COLOR);
+String text=to_string(4-i);
+Size textsize = getTextSize(text, FONT_HERSHEY_COMPLEX, 3,10,0);
+putText( count, text, Point(50,130), FONT_HERSHEY_COMPLEX, 3, Scalar(0, 
+255, 0),5,lineType);
+imshow("count",count);
+waitKey(1000);
+}
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+interrupt();
+Serial.flush();
+circle(traffic, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(1,185,255),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+waitKey(1000);
+Serial.waitForReadyRead(1000);
+input=Serial.readAll();
+if(input.size()>2)
+interrupt();
+Serial.flush();
+circle(traffic, Point(110,110), 100, Scalar(0,0,255),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("Traffic",traffic);
+waitKey(1000);
+}
+}
+}
+void interrupt()
+{
+int lineType = 8;
+if(input[0]=='1')
+{
+destroyAllWindows();
+Mat ambulance;
+ambulance=imread("Ambulance.jpg");
+resize(ambulance,ambulance,Size(500,500));
+imshow("Ambulance",ambulance);
+circle(traffic1, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic1, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic1, Point(110,550), 100, Scalar(0,255,0),FILLED,LINE_8);
+imshow("ROAD1",traffic1);
+circle(traffic, Point(110,110), 100, Scalar(0,0,255),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("ROAD2",traffic);
+for (int i=0;i<10;i++)
+{
+Mat count = imread("circle.png",IMREAD_COLOR);
+String text=to_string(10-i);
+Size textsize = getTextSize(text, FONT_HERSHEY_COMPLEX, 3,10,0);
+putText( count, text, Point(50,130), FONT_HERSHEY_COMPLEX, 3, Scalar(0, 
+255, 0),5,lineType);
+imshow("count",count);
+waitKey(1000);
+}
+destroyAllWindows();
+}
+else if (input[0]=='2')
+{
+destroyAllWindows();
+Mat ambulance;
+ambulance=imread("Ambulance.jpg");
+resize(ambulance,ambulance,Size(500,500));
+imshow("Ambulance",ambulance);
+circle(traffic1, Point(110,110), 100, Scalar(0,0,255),FILLED,LINE_8);
+circle(traffic1, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic1, Point(110,550), 100, Scalar(0,0,0),FILLED,LINE_8);
+imshow("ROAD1",traffic1);
+circle(traffic, Point(110,110), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,330), 100, Scalar(0,0,0),FILLED,LINE_8);
+circle(traffic, Point(110,550), 100, Scalar(0,255,0),FILLED,LINE_8);
+imshow("ROAD2",traffic);
+for (int i=0;i<10;i++)
+{
+Mat count = imread("circle.png",IMREAD_COLOR);
+String text=to_string(10-i);
+Size textsize = getTextSize(text, FONT_HERSHEY_COMPLEX, 3,10,0);
+putText( count, text, Point(50,130), FONT_HERSHEY_COMPLEX, 3, Scalar(0, 
+255, 0),5,lineType);
+imshow("count",count);
+waitKey(1000);
+}
+destroyAllWindows();
+}
+}
+// Remove the bounding boxes with low confidence using non-maxima suppression
+void postprocess(Mat& frame, const vector<Mat>& outs)
+{
+vector<int> classIds;
+vector<float> confidences;
+vector<Rect> boxes;
+for (size_t i = 0; i < outs.size(); ++i)
+{
+// Scan through all the bounding boxes output from the network and keep only the
+// ones with high confidence scores. Assign the box's class label as the class
+// with the highest score for the box.
+float* data = (float*)outs[i].data;
+for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols)
+{
+Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
+Point classIdPoint;
+double confidence;
+// Get the value and location of the maximum score
+minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
+if (confidence > confThreshold)
+{
+int centerX = (int)(data[0] * frame.cols);
+int centerY = (int)(data[1] * frame.rows);
+int width = (int)(data[2] * frame.cols);
+int height = (int)(data[3] * frame.rows);
+int left = centerX - width / 2;
+int top = centerY - height / 2;
+classIds.push_back(classIdPoint.x);
+confidences.push_back((float)confidence);
+boxes.push_back(Rect(left, top, width, height));
+}
+}
+}
+// Perform non maximum suppression to eliminate redundant overlapping boxes with
+// lower confidences
+vector<int> indices;
+NMSBoxes(boxes, confidences, confThreshold, nmsThreshold, indices);
+for (size_t i = 0; i < indices.size(); ++i)
+{
+int idx = indices[i];
+Rect box = boxes[idx];
+drawPred(classIds[idx], confidences[idx], box.x, box.y,
+box.x + box.width, box.y + box.height, frame);
+}
+}
+// Draw the predicted bounding box
+void drawPred(int classId, float conf, int left, int top, int right, int bottom, Mat& frame)
+{
+//Draw a rectangle displaying the bounding box
+string demo=classes[classId];
+if((demo=="car")||(demo=="motorbike")||(demo=="truck")||(demo=="bus")||(demo=="bic
+ycle"))
+{
+rectangle(frame, Point(left, top), Point(right, bottom), Scalar(255, 178, 50), 3);
+//Get the label for the class name and its confidence
+string label = format("%.2f", conf);
+if (!classes.empty())
+{
+vehicleCnt++;
+CV_Assert(classId < (int)classes.size());
+label = classes[classId] + ":" + label;
+}
+//////////////////////////prediction part ///////////////////////////////
+// cout<<"class="<< classes[classId]<<endl;
+// cout<<"label="<<label<<endl;
+//Display the label at the top of the bounding box
+// int baseLine;
+// Size labelSize = getTextSize(label, FONT_HERSHEY_SIMPLEX, 0.5, 1, 
+&baseLine);
+// top = max(top, labelSize.height);
+// rectangle(frame, Point(left, top - round(1.5*labelSize.height)), Point(left + 
+round(1.5*labelSize.width), top + baseLine), Scalar(255, 255, 255), FILLED);
+// putText(frame, label, Point(left, top), FONT_HERSHEY_SIMPLEX, 0.75, 
+Scalar(0,0,0),1);
+///////////////////////////////////////////////////////////////////
+}
+}
+// Get the names of the output layers
+vector<String> getOutputsNames(const Net& net)
+{
+static vector<String> names;
+if (names.empty())
+{
+//Get the indices of the output layers, i.e. the layers with unconnected outputs
+vector<int> outLayers = net.getUnconnectedOutLayers();
+// cout<<"outlayer 
+size"<<outLayers.size()<<outLayers[0]<<outLayers[1]<<outLayers[2]<<endl;
+//get the names of all the layers in the network
+vector<String> layersNames = net.getLayerNames();
+cout<<"size of 
+layersNames"<<layersNames.size()<<endl<<layersNames[226]<<endl;
+// Get the names of the output layers in names
+names.resize(outLayers.size());
+for (size_t i = 0; i < outLayers.size(); i++)
+{
+names[i] = layersNames[outLayers[i] - 1];
+}
+// cout<<"names"<<names[0]<<names[1]<<names[2]<<names[3]<<endl;
+}
+return names;
+}
